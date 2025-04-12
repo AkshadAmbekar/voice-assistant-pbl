@@ -1,144 +1,214 @@
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import scrolledtext
 import threading
-import jarvis_core
+import time
+import pyttsx3
+import speech_recognition as sr
+from jarvis_core import detect_hotword, takeCommand, process_query, speak, wishMe, set_callbacks, run_voice_assistant
 
-class JarvisGUI:
+class VoiceAssistantGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Jarvis - Voice Assistant")
-        self.root.geometry("500x600")
-        self.root.resizable(False, False)
+        self.root.geometry("600x400")
+        self.root.configure(bg="#f0f0f0")
 
-        self.create_widgets()
-        self.listening = False
+        # Create a frame for the header
+        header_frame = tk.Frame(root, bg="#4a6fa5")
+        header_frame.pack(fill=tk.X)
 
-    def create_widgets(self):
-        self.label_title = tk.Label(self.root, text="Jarvis", font=("Helvetica", 32, "bold"), fg="#1E90FF")
-        self.label_title.pack(pady=20)
+        # Title label
+        title_label = tk.Label(header_frame, text="Jarvis Voice Assistant", 
+                              font=("Arial", 16, "bold"), bg="#4a6fa5", fg="white")
+        title_label.pack(pady=10)
 
-        self.text_display = tk.Text(self.root, wrap=tk.WORD, font=("Helvetica", 12), height=18, width=58)
-        self.text_display.pack(pady=10)
-        self.text_display.insert(tk.END, "Welcome! Click 'Start Listening' to begin.\n")
-        self.text_display.configure(state='disabled')
+        # Middle frame for status and listen button
+        middle_frame = tk.Frame(root, bg="#f0f0f0")
+        middle_frame.pack(fill=tk.X, pady=5)
 
-        self.listen_button = tk.Button(self.root, text="Start Listening", font=("Helvetica", 14), command=self.toggle_listen, bg="#1E90FF", fg="white", width=20)
-        self.listen_button.pack(pady=20)
-
-    def toggle_listen(self):
-        if not self.listening:
-            self.listening = True
-            self.listen_button.configure(text="Stop Listening")
-            threading.Thread(target=self.run_jarvis_loop).start()
-        else:
-            self.listening = False
-            self.listen_button.configure(text="Start Listening")
-
-    def display_text(self, text):
-        self.text_display.configure(state='normal')
-        self.text_display.insert(tk.END, text + "\n")
-        self.text_display.see(tk.END)
-        self.text_display.configure(state='disabled')
-
-    def run_jarvis_loop(self):
-        self.display_text("Hotword detection started. Say 'Jarvis'...")
-        while self.listening:
-            try:
-                if jarvis_core.detect_hotword("jarvis"):
-                    self.display_text("Hotword detected. Listening for command...")
-                    jarvis_core.wishMe()
-                    while self.listening:
-                        query = jarvis_core.takeCommand()
-                        if query and query != "none":
-                            self.display_text(f"You said: {query}")
-                            response = self.process_query(query)
-                            if response == "exit":
-                                self.display_text("Goodbye! Exiting.")
-                                self.root.quit()
-                                return
-                            break
-            except Exception as e:
-                self.display_text(f"Error: {e}")
-
-    def process_query(self, query):
-        query = query.lower()
-        if 'wikipedia' in query:
-            jarvis_core.speak('Searching Wikipedia...')
-            query = query.replace("wikipedia", "")
-            result = jarvis_core.wikipedia.summary(query, sentences=2)
-            self.display_text(result)
-            jarvis_core.speak(result)
-
-        elif 'open youtube' in query:
-            jarvis_core.webbrowser.open("https://youtube.com")
-
-        elif 'play music' in query:
-            music_dir = r"C:\\Users\\uday dherange\\Downloads"
-            songs = [song for song in jarvis_core.os.listdir(music_dir) if song.endswith(".mp3")]
-            if songs:
-                jarvis_core.os.startfile(jarvis_core.os.path.join(music_dir, songs[0]))
-            else:
-                jarvis_core.speak("No music files found.")
-
-        elif 'current time' in query:
-            now = jarvis_core.datetime.datetime.now().strftime("%H:%M:%S")
-            jarvis_core.speak(f"The time is {now}")
-            self.display_text(f"The time is {now}")
-
-        elif 'open chatbot' in query:
-            jarvis_core.webbrowser.open("https://chat.openai.com/")
-
-        elif 'temperature' in query:
-            jarvis_core.speak("Which city?")
-            city = jarvis_core.takeCommand()
-            params = {"access_key": jarvis_core.API_KEY, "query": city}
-            res = jarvis_core.requests.get(jarvis_core.BASE_URL, params=params)
-            weather_data = res.json()
-            if "current" in weather_data:
-                temp = weather_data["current"]["temperature"]
-                result = f"The temperature in {city} is {temp}°C."
-                jarvis_core.speak(result)
-                self.display_text(result)
-            else:
-                jarvis_core.speak("Sorry, couldn't fetch temperature.")
-
-        elif 'battery' in query:
-            battery = jarvis_core.psutil.sensors_battery()
-            percent = battery.percent
-            jarvis_core.speak(f"We have {percent}% battery.")
-            self.display_text(f"Battery: {percent}%")
-
-        elif 'spotify' in query:
-            jarvis_core.speak("Which song?")
-            song = jarvis_core.takeCommand()
-            jarvis_core.play_on_spotify(song)
-
-        elif 'news' in query or 'headlines' in query:
-            headlines = jarvis_core.getNewsNewsData()
-            for headline in headlines:
-                self.display_text(headline)
-                
+        # Status display
+        self.status_label = tk.Label(middle_frame, text="Initializing...", 
+                                    font=("Arial", 12), bg="#f0f0f0", fg="#333333")
+        self.status_label.pack(side=tk.LEFT, padx=10)
         
+        # Listen button with visual indicator
+        self.listen_button_frame = tk.Frame(middle_frame, bg="#f0f0f0")
+        self.listen_button_frame.pack(side=tk.RIGHT, padx=10)
+        
+        self.listen_indicator = tk.Canvas(self.listen_button_frame, width=30, height=30, bg="#f0f0f0", highlightthickness=0)
+        self.listen_indicator.pack(side=tk.RIGHT, padx=5)
+        
+        # Draw initial inactive indicator (gray circle)
+        self.indicator_circle = self.listen_indicator.create_oval(5, 5, 25, 25, fill="#cccccc", outline="#999999")
+        
+        # Make the indicator clickable
+        self.listen_indicator.bind("<Button-1>", self.toggle_listening)
+        
+        # Label for the indicator
+        self.indicator_label = tk.Label(self.listen_button_frame, text="Click to activate", 
+                                      font=("Arial", 10), bg="#f0f0f0", fg="#666666")
+        self.indicator_label.pack(side=tk.RIGHT)
 
-        elif 'joke' in query or 'laugh' in query:
-            jarvis_core.tell_joke()
+        # Output text area
+        self.output_text = scrolledtext.ScrolledText(root, wrap=tk.WORD, 
+                                                   font=("Consolas", 11), 
+                                                   bg="#ffffff", fg="#333333")
+        self.output_text.pack(expand=True, fill='both', padx=10, pady=10)
 
-        elif 'alarm' in query:
-            jarvis_core.set_alarm()
+        # Button frame
+        button_frame = tk.Frame(root, bg="#f0f0f0")
+        button_frame.pack(fill=tk.X, pady=10)
 
-        elif 'search' in query or 'google' in query:
-            jarvis_core.speak("What should I search for?")
-            search_query = jarvis_core.takeCommand()
-            result = jarvis_core.google_search_and_speak(search_query)
-            self.display_text(f"Search result: {result}")
+        # Exit button
+        self.exit_button = tk.Button(button_frame, text="Exit", command=self.stop, 
+                                    font=("Arial", 12), bg="#e74c3c", fg="white")
+        self.exit_button.pack(side=tk.RIGHT, padx=10)
 
-        elif 'close' in query or 'stop' in query:
-            jarvis_core.speak("Goodbye!")
-            return "exit"
+        # Clear button
+        self.clear_button = tk.Button(button_frame, text="Clear Log", command=self.clear_log, 
+                                     font=("Arial", 12), bg="#3498db", fg="white")
+        self.clear_button.pack(side=tk.RIGHT, padx=10)
 
-        return "ok"
+        # Listening state variables
+        self.running = True
+        self.continuous_mode = False
+        self.manual_activation = False
+        self.processing_command = False
+        
+        # Set up callbacks to update GUI from jarvis_core
+        set_callbacks(self.log_output, self.update_status)
+        
+        # Start the assistant thread
+        self.thread = threading.Thread(target=self.assistant_loop)
+        self.thread.daemon = True
+        self.thread.start()
+        
+        # Start indicator update thread
+        self.indicator_thread = threading.Thread(target=self.update_indicator_loop)
+        self.indicator_thread.daemon = True
+        self.indicator_thread.start()
+
+    def update_status(self, text):
+        """Update status display safely from any thread"""
+        self.root.after(0, lambda: self.status_label.config(text=text))
+
+    def log_output(self, text):
+        """Log output to text area safely from any thread"""
+        self.root.after(0, lambda: self._append_to_log(text))
+    
+    def _append_to_log(self, text):
+        """Actually append text to log (called in main thread)"""
+        self.output_text.insert(tk.END, f"{text}\n")
+        self.output_text.see(tk.END)
+
+    def clear_log(self):
+        """Clear the output log"""
+        self.output_text.delete(1.0, tk.END)
+        self.log_output("Log cleared")
+    
+    def update_indicator_loop(self):
+        """Update visual indicator based on current state"""
+        last_state = None
+        
+        while self.running:
+            current_state = None
+            
+            if self.continuous_mode:
+                if self.processing_command:
+                    # Processing - yellow
+                    current_state = "#f39c12"  # Orange/yellow
+                else:
+                    # Active listening - green
+                    current_state = "#2ecc71"  # Green
+            else:
+                # Hotword detection - gray
+                current_state = "#cccccc"  # Light gray
+            
+            # Only update UI if state changed
+            if current_state != last_state:
+                self.root.after(0, lambda color=current_state: self.update_indicator_color(color))
+                last_state = current_state
+            
+            time.sleep(0.1)
+    
+    def update_indicator_color(self, color):
+        """Update the indicator color (runs on main thread)"""
+        self.listen_indicator.itemconfig(self.indicator_circle, fill=color)
+        
+        # Also update the label
+        if color == "#2ecc71":  # Green
+            self.indicator_label.config(text="Listening...")
+        elif color == "#f39c12":  # Orange
+            self.indicator_label.config(text="Processing...")
+        else:  # Gray
+            self.indicator_label.config(text="Click to activate")
+
+    def toggle_listening(self, event=None):
+        """Manually toggle the listening state when indicator is clicked"""
+        if not self.continuous_mode and not self.manual_activation:
+            # Activate assistant manually
+            self.manual_activation = True
+            self.log_output("Assistant manually activated")
+        elif self.continuous_mode:
+            # Return to hotword detection mode
+            self.continuous_mode = False
+            self.log_output("Returning to hotword detection mode")
+            speak("Going back to hotword detection mode")
+
+    def assistant_loop(self):
+        """Main assistant loop that runs in background thread"""
+        self.update_status("Starting up...")
+        self.log_output("Voice Assistant initialized")
+        wishMe()
+        
+        while self.running:
+            # Check if manually activated through button
+            if self.manual_activation:
+                self.manual_activation = False
+                self.continuous_mode = True
+                speak("How can I help you?")
+            
+            # Hotword detection mode
+            if not self.continuous_mode:
+                self.update_status("Listening for hotword...")
+                if detect_hotword():
+                    self.log_output("Hotword detected!")
+                    speak("How can I help you?")
+                    self.continuous_mode = True
+            
+            # Continuous listening mode
+            if self.continuous_mode and self.running:
+                query = takeCommand()
+                
+                if query != "none":
+                    self.update_status("Processing command...")
+                    self.processing_command = True
+                    
+                    result = process_query(query)
+                    
+                    self.processing_command = False
+                    
+                    # Handle different return values from process_query
+                    if result == "shutdown":
+                        self.root.after(0, self.stop)
+                        return
+                    elif result is False:
+                        # Exit continuous mode, go back to hotword detection
+                        self.continuous_mode = False
+                        self.update_status("Listening for hotword...")
+                    else:
+                        self.update_status("Ready for next command...")
+            
+            # Short sleep to prevent CPU hogging
+            time.sleep(0.1)
+
+    def stop(self):
+        """Stop the assistant and close the application"""
+        self.running = False
+        self.root.after(1000, self.root.destroy)  # Give time for threads to clean up
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = JarvisGUI(root)
+    app = VoiceAssistantGUI(root)
+    root.protocol("WM_DELETE_WINDOW", app.stop)  # Handle window close button
     root.mainloop()
