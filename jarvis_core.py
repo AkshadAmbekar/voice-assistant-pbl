@@ -20,7 +20,7 @@ from googlesearch import search
 import subprocess
 import cv2
 
-# API keys and setup
+# api-keys
 NEWSDATA_API_KEY = "pub_78348fa8cf5f3cb028a545aa4643b5e4fc3a8"
 API_KEY = "fe057c28ff3077ebb41755e4bce2f959"
 BASE_URL = "http://api.weatherstack.com/current"
@@ -28,16 +28,15 @@ SPOTIFY_CLIENT_ID = "93eca05e29d843f38e73382887dbe1c4"
 SPOTIFY_CLIENT_SECRET = "0fed1d9137ac4c7fb24843e79bc65032"
 SPOTIFY_REDIRECT_URI = "http://127.0.0.1:8080/callback/"
 
-# Global variables for GUI communication
 output_callback = None
 status_callback = None
 
-# Initialize TTS engine
+# initialize-TTS-engine
 engine = pyttsx3.init('sapi5')
 voices = engine.getProperty('voices')
 engine.setProperty('voice', voices[0].id)
 
-# Initialize Spotify client
+# initialize-spotify-client--deactivated
 sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
     client_id=SPOTIFY_CLIENT_ID,
     client_secret=SPOTIFY_CLIENT_SECRET,
@@ -53,13 +52,13 @@ def set_callbacks(output_cb, status_cb):
 
 def log_output(text):
     """Send output to GUI if callback is set"""
-    print(text)  # Still print to console
+    print(text)
     if output_callback:
         output_callback(text)
 
 def update_status(text):
     """Update status on GUI if callback is set"""
-    print(f"Status: {text}")  # Also print status to console
+    print(f"Status: {text}")
     if status_callback:
         status_callback(text)
 
@@ -391,5 +390,5 @@ def run_voice_assistant():
                     if result == "shutdown":
                         return
                     elif result is False:
-                        # Exit continuous mode, go back to hotword detection
+                        # exit-continuous-start-hotword-detection
                         break
