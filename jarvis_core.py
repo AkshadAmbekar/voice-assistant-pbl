@@ -378,17 +378,30 @@ def process_query(query):
 
 def run_voice_assistant():
     """Main function to run the voice assistant - for standalone usage"""
+    # Start with greeting
     wishMe()
+    
+    # Start in continuous mode by default, no initial hotword detection
     while True:
-        if detect_hotword():
-            speak("How can I help you?")
-            continuous_mode = True
-            while continuous_mode:
-                query = takeCommand()
-                if query != "none":
-                    result = process_query(query)
-                    if result == "shutdown":
-                        return
-                    elif result is False:
-                        # exit-continuous-start-hotword-detection
-                        break
+        # Always start in continuous listening mode
+        continuous_mode = True
+        
+        # While in continuous mode, keep taking commands
+        while continuous_mode:
+            query = takeCommand()
+            if query != "none":
+                result = process_query(query)
+                if result == "shutdown":
+                    return  # Exit the entire program
+                elif result is False:
+                    # User said "exit" - only now switch to hotword detection
+                    continuous_mode = False
+                    break
+        
+        # Only reached after user says "exit"
+        # Now start hotword detection loop
+        while not continuous_mode:
+            if detect_hotword():
+                speak("I'm back. How can I help you?")
+                continuous_mode = True  # Return to continuous mode
+                break
