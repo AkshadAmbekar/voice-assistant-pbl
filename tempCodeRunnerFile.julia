@@ -1,0 +1,38 @@
+# Correct the arrows while keeping the same layout
+
+# Create figure and axis
+fig, ax = plt.subplots(figsize=(10, 6))
+ax.axis('off')
+
+# Box coordinates (x, y, width, height)
+boxes = [
+    (0.05, 0.7, 0.2, 0.1, "Start Application"),
+    (0.35, 0.7, 0.2, 0.1, "Load Tkinter GUI"),
+    (0.65, 0.7, 0.25, 0.1, "Display Menu Options"),
+    (0.05, 0.4, 0.25, 0.1, "User Interaction"),
+    (0.4, 0.4, 0.25, 0.1, "Perform Operation\n(New/Open/Save/Exit)"),
+    (0.75, 0.4, 0.2, 0.1, "Save Changes"),
+    (0.4, 0.1, 0.25, 0.1, "Exit Application")
+]
+
+# Draw boxes
+for x, y, w, h, text in boxes:
+    rect = patches.FancyBboxPatch((x, y), w, h,
+                                  boxstyle="round,pad=0.02", 
+                                  edgecolor="black", facecolor="#cce5ff", linewidth=2)
+    ax.add_patch(rect)
+    ax.text(x + w/2, y + h/2, text, ha='center', va='center', fontsize=10)
+
+# Draw corrected arrows (right direction)
+arrowprops = dict(arrowstyle="->", linewidth=2, color='black')
+ax.annotate("", xy=(0.35, 0.75), xytext=(0.25, 0.75), arrowprops=arrowprops)
+ax.annotate("", xy=(0.65, 0.75), xytext=(0.55, 0.75), arrowprops=arrowprops)
+ax.annotate("", xy=(0.175, 0.5), xytext=(0.775, 0.7), arrowprops=arrowprops)
+ax.annotate("", xy=(0.4, 0.45), xytext=(0.3, 0.45), arrowprops=arrowprops)
+ax.annotate("", xy=(0.75, 0.45), xytext=(0.65, 0.45), arrowprops=arrowprops)
+ax.annotate("", xy=(0.525, 0.2), xytext=(0.85, 0.4), arrowprops=arrowprops)
+
+# Save the corrected flowchart
+corrected_flowchart_path = '/mnt/data/methodology_flowchart_corrected.png'
+plt.savefig(corrected_flowchart_path, bbox_inches='tight')
+corrected_flowchart_path
