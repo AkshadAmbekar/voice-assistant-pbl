@@ -19,14 +19,15 @@ import pywhatkit
 from googlesearch import search
 import subprocess
 import cv2
+from dotenv import load_dotenv
 
 # api-keys
-NEWSDATA_API_KEY = "pub_78348fa8cf5f3cb028a545aa4643b5e4fc3a8"
-API_KEY = "fe057c28ff3077ebb41755e4bce2f959"
-BASE_URL = "http://api.weatherstack.com/current"
-SPOTIFY_CLIENT_ID = "93eca05e29d843f38e73382887dbe1c4"
-SPOTIFY_CLIENT_SECRET = "0fed1d9137ac4c7fb24843e79bc65032"
-SPOTIFY_REDIRECT_URI = "http://127.0.0.1:8080/callback/"
+NEWSDATA_API_KEY = load_dotenv('NEWSDATA_API_KEY')
+API_KEY = load_dotenv('API_KEY')
+BASE_URL = load_dotenv('BASE_URL')
+SPOTIFY_CLIENT_ID = load_dotenv('SPOTIFY_CLIENT_ID')
+SPOTIFY_CLIENT_SECRET = load_dotenv('SPOTIFY_CLIENT_SECRET')
+SPOTIFY_REDIRECT_URI = load_dotenv('SPOTIFY_REDIRECT_URI')
 
 output_callback = None
 status_callback = None
