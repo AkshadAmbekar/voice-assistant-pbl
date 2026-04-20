@@ -2,9 +2,7 @@ import tkinter as tk
 from tkinter import scrolledtext
 import threading
 import time
-import pyttsx3
-import speech_recognition as sr
-from jarvis_core import detect_hotword, takeCommand, process_query, speak, wishMe, set_callbacks, run_voice_assistant
+from jarvis_core import detect_hotword, takeCommand, process_query, speak, wishMe, set_callbacks
 
 class VoiceAssistantGUI:
     def __init__(self, root):
@@ -180,10 +178,15 @@ class VoiceAssistantGUI:
                 if query != "none":
                     self.update_status("Processing command...")
                     self.processing_command = True
-                    
-                    result = process_query(query)
-                    
-                    self.processing_command = False
+
+                    try:
+                        result = process_query(query)
+                    except Exception as e:
+                        self.log_output(f"Command processing error: {e}")
+                        speak("Sorry, something went wrong while processing that command.")
+                        result = True
+                    finally:
+                        self.processing_command = False
                     
                     # handling-different-return-values-from-process_query
                     if result == "shutdown":
@@ -200,6 +203,8 @@ class VoiceAssistantGUI:
 
     def stop(self):
         """Stop the assistant and close the application"""
+        if not self.running:
+            return
         self.running = False
         self.root.after(1000, self.root.destroy)  # cleaning-threads
 

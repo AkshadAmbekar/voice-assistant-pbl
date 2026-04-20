@@ -15,35 +15,51 @@ from spotipy.oauth2 import SpotifyOAuth
 import pyautogui
 import time
 import re
-import pywhatkit
 from googlesearch import search
 import subprocess
 import cv2
 from dotenv import load_dotenv
+import threading
+from urllib.parse import quote_plus, urlparse
+import uuid
+import tempfile
+
+try:
+    import pywhatkit
+    PYWHATKIT_IMPORT_ERROR = None
+except Exception as e:
+    pywhatkit = None
+    PYWHATKIT_IMPORT_ERROR = str(e)
+
+load_dotenv()
 
 # api-keys
-NEWSDATA_API_KEY = load_dotenv('NEWSDATA_API_KEY')
-API_KEY = load_dotenv('API_KEY')
-BASE_URL = load_dotenv('BASE_URL')
-SPOTIFY_CLIENT_ID = load_dotenv('SPOTIFY_CLIENT_ID')
-SPOTIFY_CLIENT_SECRET = load_dotenv('SPOTIFY_CLIENT_SECRET')
-SPOTIFY_REDIRECT_URI = load_dotenv('SPOTIFY_REDIRECT_URI')
+NEWSDATA_API_KEY = os.getenv('NEWSDATA_API_KEY')
+API_KEY = os.getenv('API_KEY')
+BASE_URL = os.getenv('BASE_URL')
+SPOTIFY_CLIENT_ID = os.getenv('SPOTIFY_CLIENT_ID')
+SPOTIFY_CLIENT_SECRET = os.getenv('SPOTIFY_CLIENT_SECRET')
+SPOTIFY_REDIRECT_URI = os.getenv('SPOTIFY_REDIRECT_URI')
 
 output_callback = None
 status_callback = None
 
-# initialize-TTS-engine
-engine = pyttsx3.init('sapi5')
-voices = engine.getProperty('voices')
-engine.setProperty('voice', voices[0].id)
+tts_lock = threading.Lock()
 
 # initialize-spotify-client--deactivated
-sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
-    client_id=SPOTIFY_CLIENT_ID,
-    client_secret=SPOTIFY_CLIENT_SECRET,
-    redirect_uri=SPOTIFY_REDIRECT_URI,
-    scope="user-read-playback-state,user-modify-playback-state"
-))
+try:
+    if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET and SPOTIFY_REDIRECT_URI:
+        sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
+            client_id=SPOTIFY_CLIENT_ID,
+            client_secret=SPOTIFY_CLIENT_SECRET,
+            redirect_uri=SPOTIFY_REDIRECT_URI,
+            scope="user-read-playback-state,user-modify-playback-state"
+        ))
+    else:
+        sp = None
+except Exception as e:
+    sp = None
+    print(f"Spotify client initialization failed: {e}")
 
 def set_callbacks(output_cb, status_cb):
     """Set callback functions for GUI updates"""
@@ -63,11 +79,59 @@ def update_status(text):
     if status_callback:
         status_callback(text)
 
+def initialize_tts():
+    """Probe TTS availability once at startup for clear diagnostics."""
+    try:
+        probe_engine = pyttsx3.init()
+        voices = probe_engine.getProperty('voices')
+        if voices:
+            probe_engine.setProperty('voice', voices[0].id)
+        probe_engine.stop()
+        log_output("TTS initialized with pyttsx3.")
+    except Exception as e:
+        log_output(f"pyttsx3 initialization failed: {e}. Using Windows speech fallback.")
+
+def speak_with_pyttsx3(text):
+    """Speak text with a fresh pyttsx3 engine per utterance for stability."""
+    local_engine = pyttsx3.init()
+    voices = local_engine.getProperty('voices')
+    if voices:
+        local_engine.setProperty('voice', voices[0].id)
+    local_engine.say(text)
+    local_engine.runAndWait()
+    local_engine.stop()
+
+def fallback_speak_windows(text):
+    """Fallback to Windows speech API when pyttsx3 is unavailable."""
+    try:
+        escaped_text = text.replace("'", "''")
+        ps_cmd = (
+            "Add-Type -AssemblyName System.Speech; "
+            "$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+            f"$synth.Speak('{escaped_text}')"
+        )
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_cmd],
+            check=False,
+            capture_output=True,
+            text=True
+        )
+    except Exception as e:
+        log_output(f"Fallback speech failed: {e}")
+
 def speak(audio):
     """Text to speech function"""
     log_output(f"Assistant: {audio}")
-    engine.say(audio)
-    engine.runAndWait()
+    text = str(audio)
+    with tts_lock:
+        try:
+            speak_with_pyttsx3(text)
+            return
+        except Exception as e:
+            log_output(f"pyttsx3 speak failed: {e}. Switching to fallback.")
+        fallback_speak_windows(text)
+
+initialize_tts()
 
 def takeCommand():
     """Takes microphone input and returns string output"""
@@ -76,7 +140,11 @@ def takeCommand():
         update_status("Listening...")
         log_output("Listening...")
         r.pause_threshold = 1
-        audio = r.listen(source)
+        try:
+            audio = r.listen(source, timeout=8, phrase_time_limit=10)
+        except sr.WaitTimeoutError:
+            log_output("Listening timed out. No speech detected.")
+            return "none"
     try:
         update_status("Recognizing...")
         log_output("Recognizing...")
@@ -96,7 +164,10 @@ def detect_hotword(hotword="jarvis"):
     mic = sr.Microphone()
     with mic as source:
         recognizer.adjust_for_ambient_noise(source)
-        audio = recognizer.listen(source)
+        try:
+            audio = recognizer.listen(source, timeout=8, phrase_time_limit=5)
+        except sr.WaitTimeoutError:
+            return False
     try:
         detected_text = recognizer.recognize_google(audio, language='en-in').lower()
         log_output(f"You said: {detected_text}")
@@ -106,15 +177,21 @@ def detect_hotword(hotword="jarvis"):
     except sr.RequestError as e:
         log_output(f"Hotword detection error: {e}")
         return False
+    except Exception as e:
+        log_output(f"Unexpected hotword error: {e}")
+        return False
 
 def clean_text(text):
     return re.sub(r'[^\x00-\x7F]+', '', text)
 
 def getNewsNewsData():
     try:
+        if not NEWSDATA_API_KEY:
+            speak("News API key is missing. Please configure it in your environment file.")
+            return
         log_output("Fetching news...")
         url = f"https://newsdata.io/api/1/news?apikey={NEWSDATA_API_KEY}&country=in&language=en"
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
         data = response.json()
         articles = data.get("results", [])[:5]
         if not articles:
@@ -153,14 +230,246 @@ def google_search_and_speak(query):
     try:
         results = list(search(query, num_results=5))
         for result in results:
-            if result.startswith("http"):
-                webbrowser.open(result)
-                speak("Opening the result in your browser.")
-                return
-        speak("Sorry, I didn't find a valid URL.")
+            url = None
+            if isinstance(result, str):
+                url = result
+            elif hasattr(result, "url"):
+                url = getattr(result, "url")
+            elif isinstance(result, dict):
+                url = result.get("url") or result.get("href") or result.get("link")
+
+            if url:
+                parsed = urlparse(url)
+                if parsed.scheme in ("http", "https") and parsed.netloc:
+                    webbrowser.open(url)
+                    speak("Opening the result in your browser.")
+                    return
+
+        fallback_url = f"https://www.google.com/search?q={quote_plus(query)}"
+        webbrowser.open(fallback_url)
+        speak("I couldn't find a direct result, so I opened Google search results in your browser.")
     except Exception as e:
         log_output(f"Search error: {e}")
-        speak("Sorry, I couldn't perform the search.")
+        fallback_url = f"https://www.google.com/search?q={quote_plus(query)}"
+        webbrowser.open(fallback_url)
+        speak("I couldn't use the search API right now, so I opened Google search in your browser.")
+
+def parse_basic_number_words(text):
+    """Convert simple number words to integers where possible."""
+    units = {
+        "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+        "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19
+    }
+    tens = {
+        "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50
+    }
+    tokens = [t for t in re.split(r"[\s\-]+", text.strip().lower()) if t]
+    if not tokens:
+        return None
+
+    if len(tokens) == 1:
+        if tokens[0] in units:
+            return units[tokens[0]]
+        if tokens[0] in tens:
+            return tens[tokens[0]]
+        return None
+
+    if len(tokens) == 2 and tokens[0] in tens and tokens[1] in units:
+        return tens[tokens[0]] + units[tokens[1]]
+
+    return None
+
+def parse_alarm_datetime(alarm_input):
+    """Parse alarm input from text into a datetime."""
+    text = alarm_input.strip().lower()
+    now = datetime.datetime.now()
+
+    duration_match = re.search(
+        r"(?:in\s+)?(\d+|[a-z\-\s]+?)\s*(minutes?|mins?|hours?|hrs?)\s*(?:from now)?$",
+        text
+    )
+    if duration_match:
+        qty_raw = duration_match.group(1).strip()
+        unit = duration_match.group(2)
+        qty = int(qty_raw) if qty_raw.isdigit() else parse_basic_number_words(qty_raw)
+        if qty is None or qty <= 0:
+            return None
+        if unit.startswith("hour") or unit.startswith("hr"):
+            return now + datetime.timedelta(hours=qty)
+        return now + datetime.timedelta(minutes=qty)
+
+    # Handle direct 24-hour format HH:MM
+    clock_match = re.search(r"\b(\d{1,2})[:.](\d{2})\b", text)
+    if clock_match:
+        hour, minute = int(clock_match.group(1)), int(clock_match.group(2))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if target <= now:
+                target += datetime.timedelta(days=1)
+            return target
+        return None
+
+    # Handle spoken/recognized compact formats like "910" or "0910"
+    digits = re.sub(r"\D", "", text)
+    if len(digits) in (3, 4):
+        if len(digits) == 3:
+            hour = int(digits[0])
+            minute = int(digits[1:])
+        else:
+            hour = int(digits[:2])
+            minute = int(digits[2:])
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if target <= now:
+                target += datetime.timedelta(days=1)
+            return target
+        return None
+
+    # Handle simple spoken pair like "nine ten"
+    words = [w for w in re.split(r"[\s\-]+", text) if w]
+    if len(words) == 2:
+        hour = parse_basic_number_words(words[0])
+        minute = parse_basic_number_words(words[1])
+        if hour is not None and minute is not None and 0 <= hour <= 23 and 0 <= minute <= 59:
+            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if target <= now:
+                target += datetime.timedelta(days=1)
+            return target
+
+    return None
+
+def create_windows_alarm_task(alarm_dt):
+    """Create a one-time native Windows scheduled task for the alarm."""
+    service_check = subprocess.run(
+        ["sc", "query", "schedule"],
+        capture_output=True,
+        text=True
+    )
+    service_text = f"{service_check.stdout}\n{service_check.stderr}".upper()
+    if "RUNNING" not in service_text:
+        raise RuntimeError(
+            "Windows Task Scheduler service is not running. "
+            "Start service 'Schedule' and try again."
+        )
+
+    task_name = f"JarvisAlarm_{alarm_dt.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    spoken_time = alarm_dt.strftime("%I:%M %p").lstrip("0")
+    escaped_spoken_time = spoken_time.replace("'", "''")
+    script_path = os.path.join(tempfile.gettempdir(), f"{task_name}.ps1")
+    script_content = (
+        "Add-Type -AssemblyName System.Speech\n"
+        "$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer\n"
+        "$synth.Volume = 100\n"
+        "$synth.Rate = 0\n"
+        f"$synth.Speak('Jarvis alarm for {escaped_spoken_time}.')\n"
+        "[console]::Beep(1000,500)\n"
+        "Start-Sleep -Milliseconds 250\n"
+        "[console]::Beep(1200,500)\n"
+        "Start-Sleep -Milliseconds 250\n"
+        "[console]::Beep(1000,500)\n"
+        f"schtasks /Delete /TN \"{task_name}\" /F | Out-Null\n"
+        "Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue\n"
+    )
+    with open(script_path, "w", encoding="utf-8") as f:
+        f.write(script_content)
+
+    task_action = (
+        f'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden '
+        f'-File "{script_path}"'
+    )
+
+    date_candidates = [
+        alarm_dt.strftime("%d/%m/%Y"),  # common in India
+        alarm_dt.strftime("%m/%d/%Y"),  # US format
+        alarm_dt.strftime("%Y/%m/%d"),  # accepted in some environments
+    ]
+    time_candidates = [
+        alarm_dt.strftime("%H:%M"),
+        alarm_dt.strftime("%I:%M %p"),
+    ]
+
+    errors = []
+    current_user = os.getenv("USERNAME", "")
+    ru_candidates = [None]
+    if current_user:
+        ru_candidates.append(current_user)
+    for date_text in date_candidates:
+        for time_text in time_candidates:
+            for ru_value in ru_candidates:
+                args = [
+                    "schtasks",
+                    "/Create",
+                    "/SC", "ONCE",
+                    "/TN", task_name,
+                    "/TR", task_action,
+                    "/ST", time_text,
+                    "/SD", date_text,
+                    "/RL", "LIMITED",
+                    "/F",
+                ]
+                if ru_value:
+                    args.extend(["/RU", ru_value])
+                result = subprocess.run(args, capture_output=True, text=True)
+                if result.returncode == 0:
+                    return task_name
+                err = (result.stderr or result.stdout or "Unknown Task Scheduler error").strip()
+                user_suffix = f" /RU {ru_value}" if ru_value else ""
+                errors.append(f"/SD {date_text} /ST {time_text}{user_suffix} -> {err}")
+
+    # Last fallback: omit /SD for same-day schedules in some locales.
+    if alarm_dt.date() == datetime.datetime.now().date():
+        for time_text in time_candidates:
+            for ru_value in ru_candidates:
+                args = [
+                    "schtasks",
+                    "/Create",
+                    "/SC", "ONCE",
+                    "/TN", task_name,
+                    "/TR", task_action,
+                    "/ST", time_text,
+                    "/RL", "LIMITED",
+                    "/F",
+                ]
+                if ru_value:
+                    args.extend(["/RU", ru_value])
+                result = subprocess.run(args, capture_output=True, text=True)
+                if result.returncode == 0:
+                    return task_name
+                err = (result.stderr or result.stdout or "Unknown Task Scheduler error").strip()
+                user_suffix = f" /RU {ru_value}" if ru_value else ""
+                errors.append(f"/ST {time_text} (no /SD){user_suffix} -> {err}")
+
+    try:
+        os.remove(script_path)
+    except OSError:
+        pass
+    raise RuntimeError(" ; ".join(errors))
+
+def set_alarm(alarm_input=None):
+    if not alarm_input:
+        speak("Tell me the alarm time. You can say 24-hour time like 09:10 or duration like 30 minutes from now.")
+        alarm_input = takeCommand()
+    if not alarm_input or alarm_input == "none":
+        speak("I couldn't hear the alarm time.")
+        return
+
+    alarm_dt = parse_alarm_datetime(alarm_input)
+    if not alarm_dt:
+        speak("I couldn't parse the alarm time. Please say HH:MM in 24-hour format or for example 30 minutes from now.")
+        return
+
+    try:
+        task_name = create_windows_alarm_task(alarm_dt)
+        speak(f"Alarm set for {alarm_dt.strftime('%I:%M %p')}. I'll keep listening for your next command.")
+        log_output(
+            f"Alarm scheduled natively in Windows Task Scheduler for "
+            f"{alarm_dt.strftime('%Y-%m-%d %H:%M:%S')} as task '{task_name}'."
+        )
+    except Exception as e:
+        log_output(f"Alarm scheduling error: {e}")
+        speak("I couldn't set the alarm in Windows Task Scheduler. Please check the log for the exact error and run Jarvis as administrator once.")
 
 def play_spotify_playlist():
     playlist_url = "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"
@@ -183,7 +492,7 @@ def tell_joke():
     url = "https://v2.jokeapi.dev/joke/Any?format=json"
     try:
         log_output("Fetching a joke...")
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
         data = response.json()
         if data["type"] == "single":
             joke = data["joke"]
@@ -199,6 +508,9 @@ def tell_joke():
 
 def evaluate_expression(expression):
     try:
+        if not expression or expression == "none":
+            speak("I didn't catch the expression.")
+            return
         expression = expression.replace('plus', '+')\
                                .replace('minus', '-')\
                                .replace('times', '*')\
@@ -206,31 +518,16 @@ def evaluate_expression(expression):
                                .replace('divided by', '/')\
                                .replace('into', '*')\
                                .replace('by', '/')
+        expression = expression.strip()
+        if not re.fullmatch(r"[0-9+\-*/().\s]+", expression):
+            speak("I can only calculate basic arithmetic expressions.")
+            return
         log_output(f"Calculating: {expression}")
-        result = eval(expression)
+        result = eval(expression, {"__builtins__": None}, {})
         speak(f"The result is {result}")
     except Exception as e:
         log_output(f"Calculation error: {e}")
         speak("Sorry, I couldn't calculate that.")
-
-def set_alarm():
-    speak("Please tell me the time for the alarm in HH:MM format.")
-    alarm_time = takeCommand()
-    match = re.match(r'(\d{1,2}):(\d{2})', alarm_time)
-    if not match:
-        speak("I didn't understand the time format.")
-        return
-    hour, minute = int(match.group(1)), int(match.group(2))
-    now = datetime.datetime.now()
-    alarm_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if alarm_dt < now:
-        alarm_dt += datetime.timedelta(days=1)
-    speak(f"Alarm set for {alarm_dt.strftime('%I:%M %p')}")
-    log_output(f"Alarm set for {alarm_dt.strftime('%I:%M %p')}")
-    while datetime.datetime.now() < alarm_dt:
-        time.sleep(10)
-    speak("It's time! Here's your alarm.")
-    os.system("start ms-windows-store://pdp/?ProductId=9WZDNCRFJ3PT")
 
 def wishMe():
     hour = int(datetime.datetime.now().hour)
@@ -252,18 +549,47 @@ def sendEmail(to, content):
 
 def process_query(query):
     """Process user commands"""
-    if 'wikipedia' in query or 'search on wikipedia' in query:
-        speak('Searching Wikipedia...')
-        query = query.replace("wikipedia", "").replace("search on wikipedia", "")
-        results = wikipedia.summary(query, sentences=2)
-        speak("According to Wikipedia")
-        speak(results)
+    if not query or query == "none":
+        return True
 
-    elif 'youtube' in query or 'open youtube' in query or 'go to youtube' in query:
+    if 'wikipedia' in query or 'search on wikipedia' in query:
+        topic = query.replace("search on wikipedia", "").replace("wikipedia", "").strip()
+        if not topic:
+            speak("Please tell me what topic you want to search on Wikipedia.")
+            return True
+        try:
+            speak('Searching Wikipedia...')
+            results = wikipedia.summary(topic, sentences=2)
+            speak("According to Wikipedia")
+            speak(results)
+        except Exception as e:
+            log_output(f"Wikipedia error: {e}")
+            speak("Sorry, I couldn't fetch that Wikipedia summary.")
+
+    elif 'play on youtube' in query:
+        song = query.replace("play on youtube", "").strip()
+        if song:
+            if pywhatkit is not None:
+                try:
+                    pywhatkit.playonyt(song)
+                    speak(f"Playing {song} on YouTube.")
+                except Exception as e:
+                    log_output(f"YouTube play error: {e}")
+                    webbrowser.open(f"https://www.youtube.com/results?search_query={song.replace(' ', '+')}")
+                    speak("I couldn't auto-play, so I opened YouTube search.")
+            else:
+                webbrowser.open(f"https://www.youtube.com/results?search_query={song.replace(' ', '+')}")
+                speak("pywhatkit is unavailable right now, so I opened YouTube search in your browser.")
+                if PYWHATKIT_IMPORT_ERROR:
+                    log_output(f"pywhatkit import error: {PYWHATKIT_IMPORT_ERROR}")
+        else:
+            speak("I didn't catch the song name.")
+
+    elif 'open youtube' in query or 'go to youtube' in query or query.strip() == "youtube":
         webbrowser.open("https://www.youtube.com")
 
     elif 'play music' in query or 'play song' in query or 'music' in query:
-        music_dir = r"C:\Sarang\Media\Songs"
+        music_dir = r"C:\Sarang\Media\Audios"
         try:
             songs = [song for song in os.listdir(music_dir) if song.endswith(".mp3")]
             if songs:
@@ -322,19 +648,32 @@ def process_query(query):
     elif 'weather' in query or 'temperature' in query:
         speak("Which city's weather would you like to know?")
         city = takeCommand()
+        if not city or city == "none":
+            speak("I couldn't hear the city name.")
+            return True
+        if not API_KEY or not BASE_URL:
+            speak("Weather service is not configured. Please add API key and base URL in your environment file.")
+            return True
         params = {"access_key": API_KEY, "query": city}
-        response = requests.get(BASE_URL, params=params)
-        weather_data = response.json()
-        if "current" in weather_data:
-            temp = weather_data["current"]["temperature"]
-            speak(f"The current temperature in {city} is {temp} degrees Celsius.")
-        else:
-            speak("Sorry, I couldn't fetch the temperature.")
+        try:
+            response = requests.get(BASE_URL, params=params, timeout=10)
+            weather_data = response.json()
+            if "current" in weather_data:
+                temp = weather_data["current"]["temperature"]
+                speak(f"The current temperature in {city} is {temp} degrees Celsius.")
+            else:
+                speak("Sorry, I couldn't fetch the temperature.")
+        except Exception as e:
+            log_output(f"Weather error: {e}")
+            speak("Sorry, I couldn't fetch the weather right now.")
 
     elif 'battery' in query or 'battery status' in query:
         battery = psutil.sensors_battery()
-        percentage = battery.percent
-        speak(f"Sir, we have {percentage} percent battery left.")
+        if battery is None:
+            speak("Sorry, I couldn't read battery information on this system.")
+        else:
+            percentage = battery.percent
+            speak(f"Sir, we have {percentage} percent battery left.")
 
     elif 'play on spotify' in query or 'spotify' in query:
         speak("Which song would you like to play?")
@@ -348,7 +687,16 @@ def process_query(query):
         tell_joke()
 
     elif 'set alarm' in query or 'alarm' in query:
-        set_alarm()
+        alarm_text = query
+        alarm_text = re.sub(r"\bset alarm\b", " ", alarm_text)
+        alarm_text = re.sub(r"\balarm\b", " ", alarm_text)
+        alarm_text = re.sub(r"\bfor\b", " ", alarm_text)
+        alarm_text = re.sub(r"\bat\b", " ", alarm_text)
+        alarm_text = re.sub(r"\s+", " ", alarm_text).strip()
+        if alarm_text:
+            set_alarm(alarm_text)
+        else:
+            set_alarm()
 
     elif 'search google for' in query or 'google search' in query:
         search_query = query.replace("search google for", "").replace("google search", "").strip()
@@ -359,13 +707,6 @@ def process_query(query):
             search_query = takeCommand()
             if search_query and search_query != "none":
                 google_search_and_speak(search_query)
-
-    elif 'play on youtube' in query or 'youtube' in query:
-        song = query.replace("play on youtube", "").replace("youtube", "").strip()
-        if song:
-            pywhatkit.playonyt(song)
-        else:
-            speak("I didn't catch the song name.")
 
     elif 'exit' in query or 'stop listening' in query:
         speak("Going back to hotword detection mode. Say Jarvis to activate me again.")
